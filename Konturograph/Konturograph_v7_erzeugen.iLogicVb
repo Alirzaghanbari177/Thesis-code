@@ -1,0 +1,300 @@
+' =====================================================================
+'  Konturograph - Bolzenhalter v7 (flach) + Seitenschale v1
+'  iLogic-Regel fuer Autodesk Inventor (getestet fuer Inventor 2025 API)
+'
+'  Erzeugt und speichert als native .ipt:
+'    1) Bolzenhalter_Flach_28Loch_v7.ipt   310 x 310 x 100 mm, 4 x 7 Sackloecher D20
+'    2) Bolzen_Seitenschale_v1.ipt         150 x 120 x 50 mm, 6 kleine Loecher + Fach
+'    3) Konturograph_Baugruppe_v7.iam      (beide Teile eingeschoben, optional)
+'
+'  Benutzung:
+'    Inventor oeffnen -> beliebiges Teil oeffnen/neu -> Verwalten -> iLogic
+'    -> Regel hinzufuegen -> diesen Text einfuegen -> Ausfuehren.
+'    (oder als externe Regel ueber den iLogic-Browser hinzufuegen)
+'  Alle Masse unten in mm. Inventor-API rechnet intern in cm (-> Funktion C).
+' =====================================================================
+
+' ---------- Speicherort ----------
+Const ORDNER As String = "D:\AAM\Konturograph"
+
+' ---------- Hauptblock ----------
+Const BL As Double = 310      ' Laenge X
+Const BB As Double = 310      ' Breite Y
+Const BH As Double = 100      ' Hoehe Z (10 cm)
+Const LOCH_D As Double = 20   ' Bohrungsdurchmesser
+Const LOCH_T As Double = 50   ' Bohrungstiefe (Sackloch -> Boden bleibt 50 mm massiv)
+Const N_X As Integer = 7      ' Loecher pro Reihe
+Const N_Y As Integer = 4      ' Reihen
+Const RAND As Double = 17.5   ' Wandstaerke Lochrand -> Aussenkante (15 < x < 20)
+
+' ---------- Schwalbenschwanz (rechte Seite des Blocks) ----------
+Const SS_B As Double = 16     ' Nutbreite an der Aussenflaeche
+Const SS_T As Double = 6      ' Nuttiefe
+Const SS_W As Double = 30     ' Flankenwinkel zur Normalen [Grad] (= 60 Grad Schwalbenschwanz)
+Const SS_Z As Double = 75     ' Hoehe Nutmitte ueber Blockboden
+Const SPIEL As Double = 0.2   ' Spiel pro Seite zwischen Feder und Nut
+
+' ---------- Seitenschale ----------
+Const SL As Double = 150      ' Laenge (Y, Schieberichtung)
+Const SB As Double = 120      ' Breite (X)
+Const SH As Double = 50       ' Hoehe -> Oberkante buendig mit Block
+Const WAND As Double = 4      ' Wandstaerke
+Const FACH_Y0 As Double = 64  ' Beginn leeres Fach (Y)
+Const FACH_T As Double = 35   ' Tiefe leeres Fach
+Const KL_T As Double = 12     ' Tiefe der kleinen Loecher
+
+Sub Main()
+    Dim app As Inventor.Application = ThisApplication
+    Dim ordnerOk As String = ORDNER
+    Try
+        If Not System.IO.Directory.Exists(ordnerOk) Then System.IO.Directory.CreateDirectory(ordnerOk)
+    Catch
+        ordnerOk = System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments)
+    End Try
+
+    Dim pBlock As String = System.IO.Path.Combine(ordnerOk, "Bolzenhalter_Flach_28Loch_v7.ipt")
+    Dim pSchale As String = System.IO.Path.Combine(ordnerOk, "Bolzen_Seitenschale_v1.ipt")
+    Dim pBaugr As String = System.IO.Path.Combine(ordnerOk, "Konturograph_Baugruppe_v7.iam")
+
+    Dim silentAlt As Boolean = app.SilentOperation
+    app.SilentOperation = True
+    Try
+        ErzeugeBlock(pBlock)
+        ErzeugeSchale(pSchale)
+        Dim asmText As String = ""
+        Try
+            ErzeugeBaugruppe(pBlock, pSchale, pBaugr)
+            asmText = vbCrLf & pBaugr
+        Catch ex As Exception
+            asmText = vbCrLf & "(Baugruppe uebersprungen: " & ex.Message & ")"
+        End Try
+        app.SilentOperation = silentAlt
+        MessageBox.Show("Fertig gespeichert:" & vbCrLf & pBlock & vbCrLf & pSchale & asmText, "Konturograph v7")
+    Catch ex As Exception
+        app.SilentOperation = silentAlt
+        MessageBox.Show("Fehler: " & ex.Message, "Konturograph v7")
+    End Try
+End Sub
+
+' =====================================================================
+'  Teil 1: flacher Bolzenhalter
+' =====================================================================
+Sub ErzeugeBlock(pfad As String)
+    Dim doc As PartDocument = NeuesTeil()
+    Dim cd As PartComponentDefinition = doc.ComponentDefinition
+    Dim tg As TransientGeometry = ThisApplication.TransientGeometry
+    Dim xy As WorkPlane = cd.WorkPlanes.Item(3)
+    Dim xz As WorkPlane = cd.WorkPlanes.Item(2)
+
+    ' --- Grundkoerper 310 x 310 x 100 (massiv) ---
+    Dim sk1 As PlanarSketch = cd.Sketches.Add(xy)
+    sk1.Name = "Skizze_Grundkoerper"
+    Vieleck(sk1, {P(0, 0, 0), P(BL, 0, 0), P(BL, BB, 0), P(0, BB, 0)})
+    Dim f1 As ExtrudeFeature = Extrusion(doc, sk1.Profiles.AddForSolid(), PartFeatureOperationEnum.kJoinOperation, C(BH), "zpos")
+    f1.Name = "Grundkoerper"
+
+    ' --- 4 x 7 Sackloecher D20 von oben ---
+    Dim oben As WorkPlane = EbeneZ(cd, BH)
+    Dim sk2 As PlanarSketch = cd.Sketches.Add(oben)
+    sk2.Name = "Skizze_Bolzenloecher"
+    Dim px As Double = (BL - 2 * RAND - LOCH_D) / (N_X - 1)   ' 42.5 mm
+    Dim py As Double = (BB - 2 * RAND - LOCH_D) / (N_Y - 1)   ' 85 mm
+    For j As Integer = 0 To N_Y - 1
+        For i As Integer = 0 To N_X - 1
+            Dim x As Double = RAND + LOCH_D / 2 + i * px
+            Dim y As Double = RAND + LOCH_D / 2 + j * py
+            sk2.SketchCircles.AddByCenterRadius(sk2.ModelToSketchSpace(P(x, y, BH)), C(LOCH_D / 2))
+        Next
+    Next
+    Dim f2 As ExtrudeFeature = Extrusion(doc, sk2.Profiles.AddForSolid(), PartFeatureOperationEnum.kCutOperation, C(LOCH_T), "cut")
+    f2.Name = "Bolzenloecher_4x7_D20"
+
+    ' --- Schwalbenschwanz-Nut an der rechten Seite (x = 310), durchgehend in Y ---
+    Dim sk3 As PlanarSketch = cd.Sketches.Add(xz)
+    sk3.Name = "Skizze_Schwalbenschwanz_Nut"
+    Dim w2 As Double = SS_B / 2 + SS_T * Math.Tan(SS_W * Math.PI / 180)
+    Vieleck(sk3, {P(BL, 0, SS_Z - SS_B / 2), P(BL - SS_T, 0, SS_Z - w2), P(BL - SS_T, 0, SS_Z + w2), P(BL, 0, SS_Z + SS_B / 2)})
+    Dim v0 As Double = Volumen(cd)
+    Dim ed As ExtrudeDefinition = cd.Features.ExtrudeFeatures.CreateExtrudeDefinition(sk3.Profiles.AddForSolid(), PartFeatureOperationEnum.kCutOperation)
+    ed.SetThroughAllExtent(PartFeatureExtentDirectionEnum.kSymmetricExtentDirection)
+    Dim f3 As ExtrudeFeature = cd.Features.ExtrudeFeatures.Add(ed)
+    f3.Name = "Schwalbenschwanz_Nut"
+
+    oben.Visible = False
+    Eigenschaften(doc, "Bolzenhalter_Flach_28Loch_v7", "Konturograph Bolzenhalter flach 310x310x100, 28x D20 Sackloch 50 tief, Schwalbenschwanznut rechts")
+    doc.Update()
+    ThisApplication.ActiveView.GoHome()
+    doc.SaveAs(pfad, False)
+End Sub
+
+' =====================================================================
+'  Teil 2: tragbare Seitenschale (wird seitlich in die Nut eingeschoben)
+' =====================================================================
+Sub ErzeugeSchale(pfad As String)
+    Dim doc As PartDocument = NeuesTeil()
+    Dim cd As PartComponentDefinition = doc.ComponentDefinition
+    Dim xy As WorkPlane = cd.WorkPlanes.Item(3)
+    Dim xz As WorkPlane = cd.WorkPlanes.Item(2)
+
+    ' --- Grundkoerper 120 x 150 x 50 ---
+    Dim sk1 As PlanarSketch = cd.Sketches.Add(xy)
+    sk1.Name = "Skizze_Schale"
+    Vieleck(sk1, {P(0, 0, 0), P(SB, 0, 0), P(SB, SL, 0), P(0, SL, 0)})
+    Dim f1 As ExtrudeFeature = Extrusion(doc, sk1.Profiles.AddForSolid(), PartFeatureOperationEnum.kJoinOperation, C(SH), "zpos")
+    f1.Name = "Schalenkoerper"
+
+    Dim oben As WorkPlane = EbeneZ(cd, SH)
+
+    ' --- leeres Fach (Rest der Schale) ---
+    Dim sk2 As PlanarSketch = cd.Sketches.Add(oben)
+    sk2.Name = "Skizze_Fach"
+    Vieleck(sk2, {P(WAND, FACH_Y0, SH), P(SB - WAND, FACH_Y0, SH), P(SB - WAND, SL - WAND, SH), P(WAND, SL - WAND, SH)})
+    Dim f2 As ExtrudeFeature = Extrusion(doc, sk2.Profiles.AddForSolid(), PartFeatureOperationEnum.kCutOperation, C(FACH_T), "cut")
+    f2.Name = "Leeres_Fach"
+
+    ' --- 2 Reihen kleine Loecher: 1.5 / 1 / 2.5  und  3 / 2.5 / 1.5 mm ---
+    Dim sk3 As PlanarSketch = cd.Sketches.Add(oben)
+    sk3.Name = "Skizze_Kleine_Loecher"
+    Dim xs() As Double = {25, 60, 95}
+    Dim reihe1() As Double = {1.5, 1.0, 2.5}   ' hintere Reihe (Y = 43, zum Fach hin)
+    Dim reihe2() As Double = {3.0, 2.5, 1.5}   ' vordere Reihe (Y = 17)
+    For i As Integer = 0 To 2
+        sk3.SketchCircles.AddByCenterRadius(sk3.ModelToSketchSpace(P(xs(i), 43, SH)), C(reihe1(i) / 2))
+        sk3.SketchCircles.AddByCenterRadius(sk3.ModelToSketchSpace(P(xs(i), 17, SH)), C(reihe2(i) / 2))
+    Next
+    Dim f3 As ExtrudeFeature = Extrusion(doc, sk3.Profiles.AddForSolid(), PartFeatureOperationEnum.kCutOperation, C(KL_T), "cut")
+    f3.Name = "Kleine_Loecher_2x3"
+
+    ' --- Schwalbenschwanz-Feder an der linken Seite (x = 0), ueber die ganze Laenge ---
+    Dim sk4 As PlanarSketch = cd.Sketches.Add(xz)
+    sk4.Name = "Skizze_Feder"
+    Dim zc As Double = SS_Z - (BH - SH)          ' 25 mm in Schalenkoordinaten
+    Dim td As Double = SS_T - SPIEL
+    Dim b0 As Double = SS_B / 2 - SPIEL
+    Dim b1 As Double = b0 + td * Math.Tan(SS_W * Math.PI / 180)
+    Vieleck(sk4, {P(0, 0, zc - b0), P(-td, 0, zc - b1), P(-td, 0, zc + b1), P(0, 0, zc + b0)})
+    Dim f4 As ExtrudeFeature = Extrusion(doc, sk4.Profiles.AddForSolid(), PartFeatureOperationEnum.kJoinOperation, C(SL), "ypos")
+    f4.Name = "Schwalbenschwanz_Feder"
+
+    oben.Visible = False
+    Eigenschaften(doc, "Bolzen_Seitenschale_v1", "Tragbare Seitenschale 150x120x50 fuer Konturograph, Loecher 1/1.5/2.5/3 mm, leeres Fach, Schwalbenschwanzfeder")
+    doc.Update()
+    ThisApplication.ActiveView.GoHome()
+    doc.SaveAs(pfad, False)
+End Sub
+
+' =====================================================================
+'  Baugruppe (optional): Schale an der rechten Seite eingeschoben
+' =====================================================================
+Sub ErzeugeBaugruppe(pBlock As String, pSchale As String, pfad As String)
+    Dim app As Inventor.Application = ThisApplication
+    Dim tg As TransientGeometry = app.TransientGeometry
+    Dim tpl As String = app.FileManager.GetTemplateFile(DocumentTypeEnum.kAssemblyDocumentObject, SystemOfMeasureEnum.kMetricSystemOfMeasure)
+    Dim asm As AssemblyDocument = CType(app.Documents.Add(DocumentTypeEnum.kAssemblyDocumentObject, tpl, True), AssemblyDocument)
+    Dim m1 As Inventor.Matrix = tg.CreateMatrix()
+    Dim o1 As ComponentOccurrence = asm.ComponentDefinition.Occurrences.Add(pBlock, m1)
+    o1.Grounded = True
+    Dim m2 As Inventor.Matrix = tg.CreateMatrix()
+    m2.SetTranslation(tg.CreateVector(C(BL), 0, C(BH - SH)))
+    Dim o2 As ComponentOccurrence = asm.ComponentDefinition.Occurrences.Add(pSchale, m2)
+    asm.Update()
+    app.ActiveView.GoHome()
+    asm.SaveAs(pfad, False)
+End Sub
+
+' =====================================================================
+'  Hilfsfunktionen
+' =====================================================================
+Function C(mm As Double) As Double
+    Return mm / 10.0       ' mm -> cm (interne API-Einheit)
+End Function
+
+Function P(xmm As Double, ymm As Double, zmm As Double) As Inventor.Point
+    Return ThisApplication.TransientGeometry.CreatePoint(C(xmm), C(ymm), C(zmm))
+End Function
+
+Function NeuesTeil() As PartDocument
+    Dim app As Inventor.Application = ThisApplication
+    Dim tpl As String = app.FileManager.GetTemplateFile(DocumentTypeEnum.kPartDocumentObject, SystemOfMeasureEnum.kMetricSystemOfMeasure)
+    Return CType(app.Documents.Add(DocumentTypeEnum.kPartDocumentObject, tpl, True), PartDocument)
+End Function
+
+' geschlossenes Polygon aus Modellpunkten (Skizzenorientierung egal)
+Sub Vieleck(sk As PlanarSketch, pts() As Inventor.Point)
+    Dim n As Integer = pts.Length
+    Dim sp(n - 1) As SketchPoint
+    For i As Integer = 0 To n - 1
+        sp(i) = sk.SketchPoints.Add(sk.ModelToSketchSpace(pts(i)), False)
+    Next
+    For i As Integer = 0 To n - 1
+        sk.SketchLines.AddByTwoPoints(sp(i), sp((i + 1) Mod n))
+    Next
+End Sub
+
+' Arbeitsebene parallel zu XY auf Hoehe zmm (Vorzeichen wird geprueft)
+Function EbeneZ(cd As PartComponentDefinition, zmm As Double) As WorkPlane
+    Dim wp As WorkPlane = cd.WorkPlanes.AddByPlaneAndOffset(cd.WorkPlanes.Item(3), C(zmm))
+    If wp.Plane.RootPoint.Z < 0 Then
+        wp.Delete()
+        wp = cd.WorkPlanes.AddByPlaneAndOffset(cd.WorkPlanes.Item(3), -C(zmm))
+    End If
+    wp.Name = "Ebene_Z" & zmm.ToString()
+    Return wp
+End Function
+
+Function Volumen(cd As PartComponentDefinition) As Double
+    If cd.SurfaceBodies.Count = 0 Then Return 0
+    Return cd.MassProperties.Volume
+End Function
+
+Function MinKoord(cd As PartComponentDefinition, achse As String) As Double
+    Dim m As Double = 1.0E+30
+    For Each b As SurfaceBody In cd.SurfaceBodies
+        Dim v As Double
+        If achse = "Y" Then v = b.RangeBox.MinPoint.Y Else v = b.RangeBox.MinPoint.Z
+        If v < m Then m = v
+    Next
+    Return m
+End Function
+
+Function Pruefe(cd As PartComponentDefinition, v0 As Double, art As String) As Boolean
+    If cd.SurfaceBodies.Count = 0 Then Return False
+    Select Case art
+        Case "cut" : Return Volumen(cd) < v0 - 0.000001
+        Case "zpos" : Return MinKoord(cd, "Z") > -0.0001
+        Case "ypos" : Return MinKoord(cd, "Y") > -0.0001
+    End Select
+    Return True
+End Function
+
+' Extrusion mit Richtungspruefung: erst positiv, falls Ergebnis falsch -> umdrehen
+Function Extrusion(doc As PartDocument, prof As Inventor.Profile, op As PartFeatureOperationEnum, distCm As Double, art As String) As ExtrudeFeature
+    Dim cd As PartComponentDefinition = doc.ComponentDefinition
+    Dim v0 As Double = Volumen(cd)
+    Dim f As ExtrudeFeature = Nothing
+    Dim richtungen() As PartFeatureExtentDirectionEnum = {PartFeatureExtentDirectionEnum.kPositiveExtentDirection, PartFeatureExtentDirectionEnum.kNegativeExtentDirection}
+    For Each r As PartFeatureExtentDirectionEnum In richtungen
+        Try
+            If f Is Nothing Then
+                Dim ed As ExtrudeDefinition = cd.Features.ExtrudeFeatures.CreateExtrudeDefinition(prof, op)
+                ed.SetDistanceExtent(distCm, r)
+                f = cd.Features.ExtrudeFeatures.Add(ed)
+            Else
+                CType(f.Extent, DistanceExtent).Direction = r
+                doc.Update()
+            End If
+            If Pruefe(cd, v0, art) Then Return f
+        Catch
+        End Try
+    Next
+    Throw New Exception("Extrusion konnte nicht korrekt erzeugt werden (" & art & ")")
+End Function
+
+Sub Eigenschaften(doc As PartDocument, teilenr As String, beschr As String)
+    Try
+        Dim ps As PropertySet = doc.PropertySets.Item("Design Tracking Properties")
+        ps.Item("Part Number").Value = teilenr
+        ps.Item("Description").Value = beschr
+    Catch
+    End Try
+End Sub
